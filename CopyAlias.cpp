@@ -848,7 +848,7 @@ extern "C" __declspec(dllexport) void RegisterPlugin(HOST_APP_TABLE* host)
     icc.dwICC = ICC_TREEVIEW_CLASSES;
     InitCommonControlsEx(&icc);
 
-    host->set_plugin_information(L"CopyAlias 2.0.0");
+    host->set_plugin_information(L"CopyAlias 1.0.0");
     host->register_object_menu(L"エイリアスをコピー", CopySelectedObjectAliases);
     host->register_object_menu(L"エイリアスの値をペースト", OpenIniApplyDialog);
 
