@@ -1,0 +1,32 @@
+#:schema ./.aviutl2-cli/aviutl2.schema.json
+# 設定ファイルについては https://github.com/sevenc-nanashi/aviutl2-cli を参照してください。
+[project]
+id = "KuroNeko.CopyAlias"
+name = "CopyAlias"
+version = "2.0.0"
+
+[development]
+aviutl2_version = "latest"
+
+[artifacts.English-copyalias-aul2]
+destination = "Language/English.copyalias.aul2"
+source = "./i18n/English.copyalias.aul2"
+
+[artifacts.English-aul2]
+enabled = false
+destination = "Language/English.aul2"
+source = "https://raw.githubusercontent.com/aviutl2/aviutl2_community_translation/refs/heads/main/locales/original_english.aul2"
+
+[artifacts.English-aul2.profiles.debug]
+enabled = true
+
+[artifacts.copyalias-aux2]
+destination = "Plugin/CopyAlias.aux2"
+
+[artifacts.copyalias-aux2.profiles.debug]
+build = "cargo build"
+source = "target/debug/CopyAlias.dll"
+
+[artifacts.copyalias-aux2.profiles.release]
+build = "cargo build --release"
+source = "target/release/CopyAlias.dll"

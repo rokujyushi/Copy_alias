@@ -1,3 +1,13 @@
+# AviUtl2 CLI
+/.aviutl2-cli
+/release
+
+# Ignore Visual Studio project files and build artifacts
 .github/*
 bin/*
 obj/*
+
+
+# Added by cargo
+
+/target
