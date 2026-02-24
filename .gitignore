@@ -4,8 +4,8 @@
 
 # Ignore Visual Studio project files and build artifacts
 .github/*
-bin/*
-obj/*
+cpp/bin/*
+cpp/obj/*
 
 
 # Added by cargo
