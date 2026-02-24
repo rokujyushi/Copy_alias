@@ -8,10 +8,6 @@ version = "2.0.0"
 [development]
 aviutl2_version = "latest"
 
-[artifacts.English-copyalias-aul2]
-destination = "Language/English.copyalias.aul2"
-source = "./i18n/English.copyalias.aul2"
-
 [artifacts.English-aul2]
 enabled = false
 destination = "Language/English.aul2"
