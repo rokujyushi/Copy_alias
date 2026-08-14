@@ -2,6 +2,9 @@
 name = "copy_alias"
 version = "2.1.0"
 edition = "2024"
+license = "MIT"
+description = "AviUtl ExEdit2 用のエイリアス操作プラグイン"
+repository = "https://github.com/rokujyushi/Copy_alias"
 
 [dependencies]
 aviutl2 = "0.39.0"
