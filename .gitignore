@@ -2,6 +2,10 @@
 /.aviutl2-cli
 /release
 
+# 動作確認用のプロジェクトファイル
+*.aup2
+*.aup2.bak
+
 # Ignore Visual Studio project files and build artifacts
 .github/*
 cpp/bin/*

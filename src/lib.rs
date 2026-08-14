@@ -2,6 +2,7 @@ use aviutl2::AnyResult;
 use ini::Ini;
 
 mod gui;
+mod track;
 
 #[derive(Debug, Clone)]
 struct PropertyEntry {
@@ -25,6 +26,7 @@ struct ApplySummary {
     applied: usize,
     skipped_effect_mismatch: usize,
     failed_set: usize,
+    adjusted: usize,
 }
 
 #[derive(Debug, Default, Clone, Copy)]
@@ -32,6 +34,15 @@ struct PasteObjectSummary {
     attempted: usize,
     created: usize,
     failed: usize,
+}
+
+#[derive(Debug, Default, Clone, Copy)]
+struct TrackPasteSummary {
+    targets: usize,
+    applied: usize,
+    skipped: usize,
+    failed: usize,
+    adjusted: usize,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -325,6 +336,122 @@ fn parse_clipboard_ini_to_apply_items(text: &str) -> Vec<ApplyItem> {
     out
 }
 
+/// トラックバー項目の読み取り結果。
+#[derive(Debug, Clone)]
+struct TrackTarget {
+    /// 現在の設定値。
+    param: track::TrackParam,
+    /// 必要な値の数（区間数 + 1）。
+    value_len: usize,
+}
+
+/// 対象の設定項目をトラックバーとして読み取る。
+///
+/// トラックバー項目でない場合は `None` を返す。
+fn read_track_target(
+    edit_section: &aviutl2::generic::EditSection,
+    object: aviutl2::generic::ObjectHandle,
+    effect: &str,
+    effect_index: usize,
+    item: &str,
+) -> Option<TrackTarget> {
+    let obj = edit_section.object(object);
+
+    // トラックバー以外の項目では取得自体が失敗する。移動無しの場合はOk(None)になる。
+    let info = obj.get_track_info(effect, effect_index, item).ok()?;
+    let raw = obj.get_effect_item(effect, effect_index, item).ok()?;
+
+    // 時間制御が無効なら、移動方法より後ろの余りはパラメータと確定できる。
+    let has_script_param = match &info {
+        Some(info) if !info.timecontrol => Some(true),
+        _ => None,
+    };
+
+    Some(TrackTarget {
+        param: track::parse(&raw, has_script_param),
+        value_len: obj.get_section_num().ok()? + 1,
+    })
+}
+
+/// 適用先がトラックバー項目の場合に、値の個数を対象の区間数へ合わせた値を返す。
+///
+/// トラックバー項目でない場合と、調整が不要な場合は `None` を返す。
+fn adjust_track_value_for_object(
+    edit_section: &aviutl2::generic::EditSection,
+    object: aviutl2::generic::ObjectHandle,
+    item: &ApplyItem,
+) -> Option<String> {
+    let target = read_track_target(
+        edit_section,
+        object,
+        &item.effect_name,
+        item.occurrence,
+        &item.property_key,
+    )?;
+
+    // 移動無しの値は単一値なので調整の余地が無い。
+    let source = track::parse(&item.value, None);
+    source.mode.as_ref()?;
+
+    let (values, adjust) = track::adjust_values(&source.values, target.value_len.max(1));
+    if !adjust.is_adjusted() {
+        return None;
+    }
+
+    Some(
+        track::TrackParam {
+            values,
+            ..source
+        }
+        .to_value_string(),
+    )
+}
+
+/// クリップボードのテキストからコピー元のトラックバー値を解決する。
+///
+/// CopyAlias 形式・エイリアス形式・設定値そのものの順に解釈を試みる。
+fn resolve_track_source(
+    text: &str,
+    effect: &str,
+    effect_index: usize,
+    item: &str,
+) -> Option<(track::TrackParam, String)> {
+    if track::is_clipboard_text(text) {
+        let clip = track::from_clipboard_text(text)?;
+        let label = format!("{} / {}", clip.effect, clip.item);
+        return Some((clip.param, label));
+    }
+
+    // エイリアス形式の場合は同じエフェクト・項目の値を探す。
+    let items = parse_clipboard_ini_to_apply_items(text);
+    if !items.is_empty() {
+        let found = items
+            .iter()
+            .find(|candidate| {
+                candidate.effect_name == effect
+                    && candidate.occurrence == effect_index
+                    && candidate.property_key == item
+            })
+            .or_else(|| {
+                items
+                    .iter()
+                    .find(|candidate| candidate.property_key == item)
+            })?;
+
+        let label = format!("エイリアス: {} / {}", found.effect_name, found.property_key);
+        return Some((track::parse(&found.value, None), label));
+    }
+
+    if track::looks_like_value(text) {
+        return Some((
+            track::parse(text.trim(), None),
+            "クリップボードの値".to_string(),
+        ));
+    }
+
+    None
+}
+
 static EDIT_HANDLE: aviutl2::generic::GlobalEditHandle = aviutl2::generic::GlobalEditHandle::new();
 
 #[aviutl2::plugin(GenericPlugin)]
@@ -335,11 +462,17 @@ impl aviutl2::generic::GenericPlugin for CopyAlias {
         Ok(Self)
     }
 
+    fn plugin_info(&self) -> aviutl2::generic::GenericPluginTable {
+        aviutl2::generic::GenericPluginTable {
+            name: "CopyAlias".to_string(),
+            information: format!(
+                "CopyAlias {version} by 黒猫大福",
+                version = env!("CARGO_PKG_VERSION")
+            ),
+        }
+    }
+
     fn register(&mut self, registry: &mut aviutl2::generic::HostAppHandle) {
-        registry.set_plugin_information(&format!(
-            "CopyAlias {version} by 黒猫大福",
-            version = env!("CARGO_PKG_VERSION")
-        ));
         EDIT_HANDLE.init(registry.create_edit_handle());
         registry.register_menus::<CopyAlias>();
     }
@@ -367,7 +500,7 @@ impl CopyAlias {
 
                 let mut aliases = Vec::new();
                 for object in selected_objects {
-                    if let Ok(alias) = edit_section.get_object_alias(&object) {
+                    if let Ok(alias) = edit_section.get_object_alias(object) {
                         if !alias.is_empty() {
                             aliases.push(alias);
                         }
@@ -443,7 +576,7 @@ impl CopyAlias {
                 };
 
                 for object in &selected_objects {
-                    let obj = edit_section.object(object);
+                    let obj = edit_section.object(*object);
                     for it in &items {
                         summary.attempted += 1;
 
@@ -453,11 +586,18 @@ impl CopyAlias {
                             continue;
                         }
 
+                        // トラックバー項目は中間点数の違いで値の個数がずれるので合わせる。
+                        let adjusted = adjust_track_value_for_object(edit_section, *object, it);
+                        if adjusted.is_some() {
+                            summary.adjusted += 1;
+                        }
+                        let value = adjusted.as_deref().unwrap_or(&it.value);
+
                         match obj.set_effect_item(
                             &it.effect_name,
                             it.occurrence,
                             &it.property_key,
-                            &it.value,
+                            value,
                         ) {
                             Ok(()) => summary.applied += 1,
                             Err(_) => summary.failed_set += 1,
@@ -469,12 +609,13 @@ impl CopyAlias {
             })??;
 
         let msg = format!(
-            "CopyAlias: 適用対象オブジェクト: {} / 試行数: {} / 適用成功: {} / エフェクト不一致スキップ: {} / 設定失敗: {}",
+            "CopyAlias: 適用対象オブジェクト: {} / 試行数: {} / 適用成功: {} / エフェクト不一致スキップ: {} / 設定失敗: {} / 値数調整: {}",
             summary.target_objects,
             summary.attempted,
             summary.applied,
             summary.skipped_effect_mismatch,
-            summary.failed_set
+            summary.failed_set,
+            summary.adjusted
         );
         let _ = aviutl2::logger::write_info_log(&msg);
 
@@ -488,7 +629,7 @@ impl CopyAlias {
             EDIT_HANDLE.call_edit_section(|edit_section| -> AnyResult<AliasPlacement> {
                 let selected = edit_section.get_selected_objects()?;
                 if let Some(first) = selected.first() {
-                    let lf = edit_section.get_object_layer_frame(first)?;
+                    let lf = edit_section.get_object_layer_frame(*first)?;
                     return Ok(AliasPlacement {
                         layer: lf.layer,
                         frame: lf.start,
@@ -565,6 +706,158 @@ impl CopyAlias {
         Ok(())
     }
 
+    #[object_item(name = "トラックバーのパラメータをコピー", error = "log_only")]
+    fn copy_track_param(
+        object: aviutl2::generic::ObjectHandle,
+        effect: &str,
+        effect_index: usize,
+        item: &str,
+    ) -> AnyResult<()> {
+        let target = EDIT_HANDLE.call_edit_section(|edit_section| {
+            read_track_target(edit_section, object, effect, effect_index, item)
+        })?;
+
+        let Some(target) = target else {
+            let _ = aviutl2::logger::write_info_log(&format!(
+                "CopyAlias: 「{item}」はトラックバー項目ではありません。"
+            ));
+            return Ok(());
+        };
+
+        let value = target.param.to_value_string();
+        let text = track::to_clipboard_text(&track::TrackClip {
+            effect: effect.to_string(),
+            effect_index,
+            item: item.to_string(),
+            param: target.param,
+        });
+
+        let mut clipboard = arboard::Clipboard::new()
+            .map_err(|e| aviutl2::anyhow::anyhow!("クリップボードを開けませんでした: {e}"))?;
+        clipboard
+            .set_text(text)
+            .map_err(|e| aviutl2::anyhow::anyhow!("クリップボードに書き込めませんでした: {e}"))?;
+
+        let _ = aviutl2::logger::write_info_log(&format!(
+            "CopyAlias: トラックバーのパラメータをコピーしました: {effect} / {item} = {value}"
+        ));
+
+        Ok(())
+    }
+
+    #[object_item(name = "トラックバーのパラメータをペースト", error = "log_only")]
+    fn paste_track_param(
+        object: aviutl2::generic::ObjectHandle,
+        effect: &str,
+        effect_index: usize,
+        item: &str,
+    ) -> AnyResult<()> {
+        // ダイアログ表示で選択状態が変わる可能性があるので、実行時点の情報を先に確定する。
+        let (target, selected_objects) = EDIT_HANDLE.call_edit_section(|edit_section| {
+            (
+                read_track_target(edit_section, object, effect, effect_index, item),
+                edit_section.get_selected_objects().unwrap_or_default(),
+            )
+        })?;
+
+        let Some(target) = target else {
+            let _ = aviutl2::logger::write_info_log(&format!(
+                "CopyAlias: 「{item}」はトラックバー項目ではありません。"
+            ));
+            return Ok(());
+        };
+
+        let mut clipboard = arboard::Clipboard::new()
+            .map_err(|e| aviutl2::anyhow::anyhow!("クリップボードを開けませんでした: {e}"))?;
+        let clip = clipboard.get_text().map_err(|e| {
+            aviutl2::anyhow::anyhow!("クリップボードのテキスト取得に失敗しました: {e}")
+        })?;
+
+        let Some((source_param, source_label)) =
+            resolve_track_source(&clip, effect, effect_index, item)
+        else {
+            let _ = aviutl2::logger::write_info_log(
+                "CopyAlias: クリップボードからトラックバーのパラメータを読み取れませんでした。",
+            );
+            return Ok(());
+        };
+
+        let target_label = if effect_index > 0 {
+            format!("{effect} ({}) / {item}", effect_index + 1)
+        } else {
+            format!("{effect} / {item}")
+        };
+
+        let Some(response) = gui::show_track_paste_dialog(gui::TrackPasteRequest {
+            target_label,
+            source_label,
+            target_param: target.param,
+            source_param: source_param.clone(),
+            target_value_len: target.value_len,
+            selected_object_count: selected_objects.len(),
+        })?
+        else {
+            let _ =
+                aviutl2::logger::write_info_log("CopyAlias: トラックバーの貼り付けをキャンセルしました。");
+            return Ok(());
+        };
+
+        // 一括適用でも、右クリックした項目のオブジェクトは必ず対象に含める。
+        let mut targets = vec![object];
+        if response.apply_to_selected {
+            for selected in selected_objects {
+                if !targets.contains(&selected) {
+                    targets.push(selected);
+                }
+            }
+        }
+
+        let summary = EDIT_HANDLE.call_edit_section(move |edit_section| {
+            let mut summary = TrackPasteSummary {
+                targets: targets.len(),
+                ..TrackPasteSummary::default()
+            };
+
+            for handle in targets {
+                let Some(current) =
+                    read_track_target(edit_section, handle, effect, effect_index, item)
+                else {
+                    summary.skipped += 1;
+                    continue;
+                };
+
+                let merged = track::merge(
+                    &current.param,
+                    &source_param,
+                    &response.parts,
+                    current.value_len,
+                );
+                if merged.adjust.is_adjusted() {
+                    summary.adjusted += 1;
+                }
+
+                match edit_section.object(handle).set_effect_item(
+                    effect,
+                    effect_index,
+                    item,
+                    &merged.value,
+                ) {
+                    Ok(()) => summary.applied += 1,
+                    Err(_) => summary.failed += 1,
+                }
+            }
+
+            summary
+        })?;
+
+        let _ = aviutl2::logger::write_info_log(&format!(
+            "CopyAlias: トラックバー貼り付け / 対象: {} / 適用成功: {} / 項目なしスキップ: {} / 設定失敗: {} / 値数調整: {}",
+            summary.targets, summary.applied, summary.skipped, summary.failed, summary.adjusted
+        ));
+
+        Ok(())
+    }
+
     #[object(name = "エイリアスからパスをコピー", error = "log_only")]
     fn copy_path_from_alias() -> AnyResult<()> {
         let selected_objects =
@@ -585,7 +878,7 @@ impl CopyAlias {
                 let mut seen = std::collections::HashSet::new();
 
                 for obj in &selected_objects {
-                    if let Ok(alias) = edit_section.get_object_alias(obj) {
+                    if let Ok(alias) = edit_section.get_object_alias(*obj) {
                         for p in extract_path_candidates_from_alias(&alias) {
                             if seen.insert(p.clone()) {
                                 out.push(p);

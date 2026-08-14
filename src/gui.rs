@@ -3,6 +3,7 @@ use eframe::egui;
 use egui_ltreeview::{NodeBuilder, TreeView};
 
 use crate::ApplyItem;
+use crate::track::{self, PasteParts, TrackParam};
 
 static DIALOG_CONTEXTS: std::sync::OnceLock<std::sync::Mutex<Vec<egui::Context>>> =
     std::sync::OnceLock::new();
@@ -34,16 +35,43 @@ pub(crate) fn close_all_plugin_dialogs() {
 
 #[cfg(windows)]
 #[repr(C)]
+#[derive(Clone, Copy)]
 struct WinPoint {
     x: i32,
     y: i32,
 }
 
 #[cfg(windows)]
-unsafe extern "system" {
-    fn GetCursorPos(lpPoint: *mut WinPoint) -> i32;
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+struct WinRect {
+    left: i32,
+    top: i32,
+    right: i32,
+    bottom: i32,
 }
 
+#[cfg(windows)]
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+struct MonitorInfo {
+    cb_size: u32,
+    rc_monitor: WinRect,
+    rc_work: WinRect,
+    dw_flags: u32,
+}
+
+#[cfg(windows)]
+const MONITOR_DEFAULTTONEAREST: u32 = 2;
+
+#[cfg(windows)]
+unsafe extern "system" {
+    fn GetCursorPos(lpPoint: *mut WinPoint) -> i32;
+    fn MonitorFromPoint(pt: WinPoint, dwFlags: u32) -> *mut std::ffi::c_void;
+    fn GetMonitorInfoW(hMonitor: *mut std::ffi::c_void, lpmi: *mut MonitorInfo) -> i32;
+}
+
+/// マウスカーソルのスクリーン座標（物理ピクセル）。
 fn get_cursor_screen_pos() -> Option<egui::Pos2> {
     #[cfg(windows)]
     {
@@ -55,6 +83,108 @@ fn get_cursor_screen_pos() -> Option<egui::Pos2> {
         }
     }
     None
+}
+
+/// 指定座標に最も近いモニタの作業領域（タスクバーを除いた範囲、物理ピクセル）。
+#[allow(unused_variables)]
+fn get_work_area(point: egui::Pos2) -> Option<egui::Rect> {
+    #[cfg(windows)]
+    {
+        let pt = WinPoint {
+            x: point.x as i32,
+            y: point.y as i32,
+        };
+
+        // SAFETY: MonitorFromPointは座標に最も近いモニタを返す。取得したハンドルは
+        // GetMonitorInfoWへ渡すだけで、解放は不要。
+        let monitor = unsafe { MonitorFromPoint(pt, MONITOR_DEFAULTTONEAREST) };
+        if monitor.is_null() {
+            return None;
+        }
+
+        let mut info = MonitorInfo {
+            cb_size: std::mem::size_of::<MonitorInfo>() as u32,
+            ..MonitorInfo::default()
+        };
+        // SAFETY: cb_sizeを設定した有効なMonitorInfoへのポインタを渡す。
+        if unsafe { GetMonitorInfoW(monitor, &mut info as *mut MonitorInfo) } == 0 {
+            return None;
+        }
+
+        return Some(egui::Rect::from_min_max(
+            egui::pos2(info.rc_work.left as f32, info.rc_work.top as f32),
+            egui::pos2(info.rc_work.right as f32, info.rc_work.bottom as f32),
+        ));
+    }
+
+    #[cfg(not(windows))]
+    None
+}
+
+/// ダイアログウィンドウの配置。
+///
+/// マウス位置を基準にしつつ、モニタの作業領域からはみ出さないように補正する。
+/// 生成時の `with_position` は論理座標として扱われDPIを反映できないため、
+/// 実際の補正は最初のフレームで [`egui::ViewportCommand::OuterPosition`]
+/// （ウィンドウのDPIで物理座標へ変換される）を送って行う。
+#[derive(Debug, Clone, Copy)]
+struct DialogWindow {
+    size: egui::Vec2,
+    offset: egui::Vec2,
+    placed: bool,
+}
+
+impl DialogWindow {
+    fn new(size: [f32; 2], offset: [f32; 2]) -> Self {
+        Self {
+            size: egui::vec2(size[0], size[1]),
+            offset: egui::vec2(offset[0], offset[1]),
+            placed: false,
+        }
+    }
+
+    /// ビューポート定義（位置は生成時の暫定値）。
+    ///
+    /// 内容が収まらない場合にユーザーが広げられるよう、最大サイズは固定しない。
+    fn viewport(&self) -> egui::ViewportBuilder {
+        let mut viewport = egui::ViewportBuilder::default();
+        if let Some(pos) = self.clamped_position(1.0) {
+            viewport = viewport.with_position(pos);
+        }
+        viewport
+            .with_inner_size(self.size)
+            .with_min_inner_size(egui::vec2(320.0, 200.0))
+    }
+
+    /// 作業領域に収めた表示位置をポイント単位で求める。
+    fn clamped_position(&self, pixels_per_point: f32) -> Option<egui::Pos2> {
+        let cursor = get_cursor_screen_pos()?;
+        let size = self.size * pixels_per_point;
+        let offset = self.offset * pixels_per_point;
+        let pos = cursor - offset;
+
+        let Some(work) = get_work_area(cursor) else {
+            return Some(pos / pixels_per_point);
+        };
+
+        // ウィンドウが作業領域より大きい場合は左上を優先する。
+        let x = (pos.x).min(work.max.x - size.x).max(work.min.x);
+        let y = (pos.y).min(work.max.y - size.y).max(work.min.y);
+
+        Some(egui::pos2(x, y) / pixels_per_point)
+    }
+
+    /// 最初のフレームで表示位置を確定する。
+    fn ensure_placed(&mut self, ctx: &egui::Context) {
+        if self.placed {
+            return;
+        }
+        self.placed = true;
+
+        if let Some(pos) = self.clamped_position(ctx.pixels_per_point()) {
+            ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(pos));
+        }
+    }
 }
 
 fn try_load_japanese_font_bytes() -> Option<Vec<u8>> {
@@ -71,6 +201,26 @@ fn try_load_japanese_font_bytes() -> Option<Vec<u8>> {
         }
     }
     None
+}
+
+/// ダイアログ共通の初期化（コンテキスト登録と日本語フォントの適用）。
+fn setup_dialog(cc: &eframe::CreationContext<'_>) {
+    register_dialog_context(&cc.egui_ctx);
+
+    if let Some(font_bytes) = try_load_japanese_font_bytes() {
+        let mut fonts = egui::FontDefinitions::default();
+        fonts.font_data.insert(
+            "jp-ui".to_owned(),
+            std::sync::Arc::new(egui::FontData::from_owned(font_bytes)),
+        );
+        if let Some(family) = fonts.families.get_mut(&egui::FontFamily::Proportional) {
+            family.insert(0, "jp-ui".to_owned());
+        }
+        if let Some(family) = fonts.families.get_mut(&egui::FontFamily::Monospace) {
+            family.insert(0, "jp-ui".to_owned());
+        }
+        cc.egui_ctx.set_fonts(fonts);
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -100,12 +250,14 @@ enum ApplyTreeNodeId {
 }
 
 struct ApplyDialogApp {
+    window: DialogWindow,
     items: Vec<ApplyDialogItem>,
     tree: Vec<TreeBlockGroup>,
     sender: std::sync::mpsc::Sender<Option<Vec<ApplyItem>>>,
 }
 
 struct PathSelectApp {
+    window: DialogWindow,
     paths: Vec<String>,
     selected: usize,
     sender: std::sync::mpsc::Sender<Option<String>>,
@@ -113,6 +265,8 @@ struct PathSelectApp {
 
 impl eframe::App for PathSelectApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        self.window.ensure_placed(ctx);
+
         egui::CentralPanel::default().show(ctx, |ui| {
             ui.heading("コピーするパスを選択");
             ui.label("複数の候補が見つかりました。1つ選択してください。");
@@ -148,7 +302,11 @@ impl eframe::App for PathSelectApp {
 }
 
 impl ApplyDialogApp {
-    fn new(items: Vec<ApplyItem>, sender: std::sync::mpsc::Sender<Option<Vec<ApplyItem>>>) -> Self {
+    fn new(
+        window: DialogWindow,
+        items: Vec<ApplyItem>,
+        sender: std::sync::mpsc::Sender<Option<Vec<ApplyItem>>>,
+    ) -> Self {
         let items: Vec<ApplyDialogItem> = items
             .into_iter()
             .map(|item| ApplyDialogItem {
@@ -160,6 +318,7 @@ impl ApplyDialogApp {
         let tree = Self::build_tree(&items);
 
         Self {
+            window,
             items,
             tree,
             sender,
@@ -265,6 +424,32 @@ impl ApplyDialogApp {
 
 impl eframe::App for ApplyDialogApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        self.window.ensure_placed(ctx);
+
+        // 決定ボタンは下部パネルに固定する。中央に置くと項目数が多いときに
+        // ツリーへ押し出されてウィンドウ外に出てしまう。
+        egui::TopBottomPanel::bottom("copy_alias_apply_actions").show(ctx, |ui| {
+            ui.add_space(6.0);
+            ui.horizontal(|ui| {
+                if ui.button("適用").clicked() {
+                    let selected = self
+                        .items
+                        .iter()
+                        .filter(|x| x.checked)
+                        .map(|x| x.item.clone())
+                        .collect::<Vec<_>>();
+                    let _ = self.sender.send(Some(selected));
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                }
+
+                if ui.button("閉じる").clicked() {
+                    let _ = self.sender.send(None);
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                }
+            });
+            ui.add_space(6.0);
+        });
+
         egui::CentralPanel::default().show(ctx, |ui| {
             ui.heading("反映するプロパティを選択");
             ui.label("チェックを外した項目は適用しません。");
@@ -281,11 +466,10 @@ impl eframe::App for ApplyDialogApp {
 
             ui.add_space(6.0);
             egui::ScrollArea::vertical()
-                .max_height(420.0)
+                .auto_shrink([false, false])
                 .show(ui, |ui| {
                     TreeView::new(egui::Id::new("copy_alias_apply_tree"))
                         .allow_multi_selection(false)
-                        .min_height(300.0)
                         .show(ui, |builder| {
                             for block in self.tree.clone() {
                                 let block_id = ApplyTreeNodeId::Block(block.block_index);
@@ -378,26 +562,275 @@ impl eframe::App for ApplyDialogApp {
                             }
                         });
                 });
+        });
+    }
+}
 
-            ui.separator();
+/// トラックバーの貼り付けダイアログへ渡す情報。
+#[derive(Debug, Clone)]
+pub(crate) struct TrackPasteRequest {
+    /// 貼り付け先の表示名（`エフェクト / 項目`）。
+    pub target_label: String,
+    /// コピー元の表示名。
+    pub source_label: String,
+    /// 貼り付け先の現在値。
+    pub target_param: TrackParam,
+    /// コピー元の値。
+    pub source_param: TrackParam,
+    /// 貼り付け先で必要な値の数（区間数 + 1）。
+    pub target_value_len: usize,
+    /// 選択中オブジェクトの数。
+    pub selected_object_count: usize,
+}
+
+/// トラックバーの貼り付けダイアログの結果。
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct TrackPasteResponse {
+    /// 反映する要素。
+    pub parts: PasteParts,
+    /// 選択中の全オブジェクトへ適用するか。
+    pub apply_to_selected: bool,
+}
+
+struct TrackPasteApp {
+    window: DialogWindow,
+    request: TrackPasteRequest,
+    available: PasteParts,
+    parts: PasteParts,
+    apply_to_selected: bool,
+    sender: std::sync::mpsc::Sender<Option<TrackPasteResponse>>,
+}
+
+impl TrackPasteApp {
+    /// 反映できない要素を落とした選択肢を返す。
+    ///
+    /// コピー元・貼り付け先のどちらかが値を持っていれば選択できる（貼り付け先の
+    /// パラメータや時間制御データを消す操作も貼り付けとして成立するため）。
+    fn available_parts(source: &TrackParam, target: &TrackParam) -> PasteParts {
+        PasteParts {
+            values: !source.values.is_empty(),
+            mode: true,
+            speed: source.mode.is_some(),
+            twopoint: source.mode.is_some(),
+            param: source.has_param_info() || target.has_param_info(),
+            timecontrol: source.timecontrol.is_some() || target.timecontrol.is_some(),
+        }
+    }
+
+    /// 選択できる要素をまとめてチェック・解除する。
+    fn set_all_checked(&mut self, checked: bool) {
+        let available = self.available;
+        self.parts = PasteParts {
+            values: checked && available.values,
+            mode: checked && available.mode,
+            speed: checked && available.speed,
+            twopoint: checked && available.twopoint,
+            param: checked && available.param,
+            timecontrol: checked && available.timecontrol,
+        };
+    }
+
+    fn speed_label(param: &TrackParam) -> String {
+        match (param.accelerate(), param.decelerate()) {
+            (true, true) => "加速 + 減速".to_string(),
+            (true, false) => "加速".to_string(),
+            (false, true) => "減速".to_string(),
+            (false, false) => "なし".to_string(),
+        }
+    }
+
+    fn checkbox_row(
+        ui: &mut egui::Ui,
+        enabled: bool,
+        checked: &mut bool,
+        title: &str,
+        value: &str,
+    ) {
+        if !enabled {
+            *checked = false;
+        }
+        ui.add_enabled_ui(enabled, |ui| {
             ui.horizontal(|ui| {
-                if ui.button("適用").clicked() {
-                    let selected = self
-                        .items
-                        .iter()
-                        .filter(|x| x.checked)
-                        .map(|x| x.item.clone())
-                        .collect::<Vec<_>>();
-                    let _ = self.sender.send(Some(selected));
+                ui.checkbox(checked, title);
+                ui.label(egui::RichText::new(value).monospace().weak());
+            });
+        });
+    }
+}
+
+impl eframe::App for TrackPasteApp {
+    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        self.window.ensure_placed(ctx);
+
+        // 決定ボタンは下部パネルに固定する（内容が増えても隠れないようにする）。
+        egui::TopBottomPanel::bottom("copy_alias_track_actions").show(ctx, |ui| {
+            ui.add_space(6.0);
+            ui.horizontal(|ui| {
+                let can_apply = !self.parts.is_empty();
+                if ui
+                    .add_enabled(can_apply, egui::Button::new("貼り付け"))
+                    .clicked()
+                {
+                    let _ = self.sender.send(Some(TrackPasteResponse {
+                        parts: self.parts,
+                        apply_to_selected: self.apply_to_selected,
+                    }));
                     ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                 }
 
-                if ui.button("閉じる").clicked() {
+                if ui.button("キャンセル").clicked() {
                     let _ = self.sender.send(None);
                     ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                 }
             });
+            ui.add_space(6.0);
         });
+
+        egui::CentralPanel::default().show(ctx, |ui| {
+            egui::ScrollArea::vertical()
+                .auto_shrink([false, false])
+                .show(ui, |ui| self.content(ui));
+        });
+    }
+}
+
+impl TrackPasteApp {
+    fn content(&mut self, ui: &mut egui::Ui) {
+        let source = self.request.source_param.clone();
+
+        {
+            ui.heading("トラックバーのパラメータを貼り付け");
+            ui.label(format!("貼り付け先: {}", self.request.target_label));
+            ui.label(format!("コピー元: {}", self.request.source_label));
+            ui.separator();
+
+            ui.horizontal(|ui| {
+                ui.label("反映する要素:");
+                if ui.button("全選択").clicked() {
+                    self.set_all_checked(true);
+                }
+                if ui.button("全解除").clicked() {
+                    self.set_all_checked(false);
+                }
+            });
+            ui.add_space(4.0);
+
+            Self::checkbox_row(
+                ui,
+                self.available.values,
+                &mut self.parts.values,
+                "値",
+                &source.values.join(", "),
+            );
+            Self::checkbox_row(
+                ui,
+                self.available.mode,
+                &mut self.parts.mode,
+                "移動方法",
+                source.mode.as_deref().unwrap_or("移動無し"),
+            );
+            Self::checkbox_row(
+                ui,
+                self.available.speed,
+                &mut self.parts.speed,
+                "加速・減速",
+                &Self::speed_label(&source),
+            );
+            Self::checkbox_row(
+                ui,
+                self.available.twopoint,
+                &mut self.parts.twopoint,
+                "中間点無視",
+                if source.twopoint() { "ON" } else { "OFF" },
+            );
+            let param_label = match (source.param.as_deref(), source.reference()) {
+                (Some(value), true) => format!("{value}（参照式）"),
+                (Some(value), false) => value.to_string(),
+                (None, true) => "（参照式）".to_string(),
+                (None, false) => "(なし)".to_string(),
+            };
+            Self::checkbox_row(
+                ui,
+                self.available.param,
+                &mut self.parts.param,
+                "パラメータ",
+                &param_label,
+            );
+            Self::checkbox_row(
+                ui,
+                self.available.timecontrol,
+                &mut self.parts.timecontrol,
+                "時間制御データ",
+                source.timecontrol.as_deref().unwrap_or("(なし)"),
+            );
+
+            ui.add_space(6.0);
+            ui.separator();
+
+            let merged = track::merge(
+                &self.request.target_param,
+                &source,
+                &self.parts,
+                self.request.target_value_len,
+            );
+
+            ui.label("適用後の値:");
+            // 外側がスクロール領域なので、ここは折り返すだけにする。
+            ui.add(egui::Label::new(egui::RichText::new(&merged.value).monospace()).wrap());
+
+            if let Some(description) = merged.adjust.describe() {
+                ui.colored_label(
+                    ui.visuals().warn_fg_color,
+                    format!("中間点数が異なるため、{description}。"),
+                );
+            }
+
+            if self.request.selected_object_count > 1 {
+                ui.add_space(4.0);
+                ui.checkbox(
+                    &mut self.apply_to_selected,
+                    format!(
+                        "選択中の全オブジェクト({}件)の同じ項目にも適用",
+                        self.request.selected_object_count
+                    ),
+                );
+            }
+        }
+    }
+}
+
+pub(crate) fn show_track_paste_dialog(
+    request: TrackPasteRequest,
+) -> AnyResult<Option<TrackPasteResponse>> {
+    let (tx, rx) = std::sync::mpsc::channel::<Option<TrackPasteResponse>>();
+    let window = DialogWindow::new([460.0, 480.0], [230.0, 240.0]);
+
+    eframe::run_native(
+        "CopyAlias - トラックバーの貼り付け",
+        eframe::NativeOptions {
+            viewport: window.viewport(),
+            ..Default::default()
+        },
+        Box::new(move |cc| {
+            setup_dialog(cc);
+
+            let available =
+                TrackPasteApp::available_parts(&request.source_param, &request.target_param);
+            Ok(Box::new(TrackPasteApp {
+                window,
+                request,
+                available,
+                parts: available,
+                apply_to_selected: false,
+                sender: tx,
+            }))
+        }),
+    )
+    .map_err(|e| aviutl2::anyhow::anyhow!("貼り付けダイアログの起動に失敗しました: {e}"))?;
+
+    match rx.try_recv() {
+        Ok(result) => Ok(result),
+        Err(_) => Ok(None),
     }
 }
 
@@ -410,42 +843,19 @@ pub(crate) fn show_path_select_dialog(paths: Vec<String>) -> AnyResult<Option<St
     }
 
     let (tx, rx) = std::sync::mpsc::channel::<Option<String>>();
-
-    let mut viewport = egui::ViewportBuilder::default();
-    if let Some(mut pos) = get_cursor_screen_pos() {
-        pos = pos - egui::vec2(210.0, 80.0);
-        viewport = viewport.with_position(pos);
-    }
-    viewport = viewport
-        .with_inner_size([420.0, 160.0])
-        .with_min_inner_size([420.0, 160.0])
-        .with_max_inner_size([420.0, 160.0]);
+    let window = DialogWindow::new([420.0, 160.0], [210.0, 80.0]);
 
     eframe::run_native(
         "CopyAlias - パス選択",
         eframe::NativeOptions {
-            viewport,
+            viewport: window.viewport(),
             ..Default::default()
         },
         Box::new(move |cc| {
-            register_dialog_context(&cc.egui_ctx);
-
-            if let Some(font_bytes) = try_load_japanese_font_bytes() {
-                let mut fonts = egui::FontDefinitions::default();
-                fonts.font_data.insert(
-                    "jp-ui".to_owned(),
-                    std::sync::Arc::new(egui::FontData::from_owned(font_bytes)),
-                );
-                if let Some(family) = fonts.families.get_mut(&egui::FontFamily::Proportional) {
-                    family.insert(0, "jp-ui".to_owned());
-                }
-                if let Some(family) = fonts.families.get_mut(&egui::FontFamily::Monospace) {
-                    family.insert(0, "jp-ui".to_owned());
-                }
-                cc.egui_ctx.set_fonts(fonts);
-            }
+            setup_dialog(cc);
 
             Ok(Box::new(PathSelectApp {
+                window,
                 paths,
                 selected: 0,
                 sender: tx,
@@ -462,42 +872,18 @@ pub(crate) fn show_path_select_dialog(paths: Vec<String>) -> AnyResult<Option<St
 
 pub(crate) fn show_apply_dialog(items: Vec<ApplyItem>) -> AnyResult<Option<Vec<ApplyItem>>> {
     let (tx, rx) = std::sync::mpsc::channel::<Option<Vec<ApplyItem>>>();
-
-    let mut viewport = egui::ViewportBuilder::default();
-    if let Some(mut pos) = get_cursor_screen_pos() {
-        pos = pos - egui::vec2(210.0, 240.0);
-        viewport = viewport.with_position(pos);
-    }
-    viewport = viewport
-        .with_inner_size([420.0, 480.0])
-        .with_min_inner_size([420.0, 480.0])
-        .with_max_inner_size([420.0, 480.0]);
+    let window = DialogWindow::new([420.0, 480.0], [210.0, 240.0]);
 
     eframe::run_native(
         "CopyAlias - プロパティ選択",
         eframe::NativeOptions {
-            viewport,
+            viewport: window.viewport(),
             ..Default::default()
         },
         Box::new(move |cc| {
-            register_dialog_context(&cc.egui_ctx);
+            setup_dialog(cc);
 
-            if let Some(font_bytes) = try_load_japanese_font_bytes() {
-                let mut fonts = egui::FontDefinitions::default();
-                fonts.font_data.insert(
-                    "jp-ui".to_owned(),
-                    std::sync::Arc::new(egui::FontData::from_owned(font_bytes)),
-                );
-                if let Some(family) = fonts.families.get_mut(&egui::FontFamily::Proportional) {
-                    family.insert(0, "jp-ui".to_owned());
-                }
-                if let Some(family) = fonts.families.get_mut(&egui::FontFamily::Monospace) {
-                    family.insert(0, "jp-ui".to_owned());
-                }
-                cc.egui_ctx.set_fonts(fonts);
-            }
-
-            Ok(Box::new(ApplyDialogApp::new(items, tx)))
+            Ok(Box::new(ApplyDialogApp::new(window, items, tx)))
         }),
     )
     .map_err(|e| aviutl2::anyhow::anyhow!("ダイアログの起動に失敗しました: {e}"))?;
