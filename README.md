@@ -121,3 +121,10 @@ Z軸回転=0.00
 - `aviutl2.toml` のアーティファクト設定で `Plugin/CopyAlias.aux2` として配置可能
 
 > 補足: `cpp/` 配下には旧実装（C++）が残っていますが、現行は Rust 実装（`src/`）です。
+
+## ライセンス
+
+- 本体: MIT License（[LICENSE](LICENSE)）
+- 本プラグインは静的リンクでビルドされるため、依存ライブラリのコードが `CopyAlias.aux2` に含まれます。各ライブラリのライセンスは [THIRD-PARTY-LICENSES.md](THIRD-PARTY-LICENSES.md) を参照してください
+	- 複数ライセンスから選択できるものは MIT を選択しています
+	- egui の既定フォント（Ubuntu-Light / Hack / Noto Emoji）が含まれるため、OFL-1.1 と Ubuntu Font License の本文も収録しています
