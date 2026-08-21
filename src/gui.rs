@@ -799,6 +799,285 @@ impl TrackPasteApp {
     }
 }
 
+/// 一括ペーストの対象1項目分。
+#[derive(Debug, Clone)]
+pub(crate) struct TrackBulkItem {
+    /// 設定項目名。
+    pub item: String,
+    /// コピー元の値。
+    pub source_param: TrackParam,
+    /// 貼り付け先の現在値。
+    pub target_param: TrackParam,
+    /// 貼り付け先で必要な値の数（区間数 + 1）。
+    pub target_value_len: usize,
+}
+
+/// 一括ペーストダイアログへ渡す情報。
+#[derive(Debug, Clone)]
+pub(crate) struct TrackBulkPasteRequest {
+    /// 貼り付け先エフェクトの表示名。
+    pub target_label: String,
+    /// 対応付けできた項目。
+    pub items: Vec<TrackBulkItem>,
+    /// コピー元にあったが対応先が無かった項目。
+    pub unmatched: Vec<String>,
+    /// 選択中オブジェクトの数。
+    pub selected_object_count: usize,
+}
+
+/// 一括ペーストダイアログの結果。
+#[derive(Debug, Clone)]
+pub(crate) struct TrackBulkPasteResponse {
+    /// 反映する要素（全項目共通）。
+    pub parts: PasteParts,
+    /// 適用する項目名。
+    pub items: Vec<String>,
+    /// 選択中の全オブジェクトへ適用するか。
+    pub apply_to_selected: bool,
+}
+
+struct TrackBulkPasteApp {
+    window: DialogWindow,
+    request: TrackBulkPasteRequest,
+    available: PasteParts,
+    parts: PasteParts,
+    checked: Vec<bool>,
+    apply_to_selected: bool,
+    sender: std::sync::mpsc::Sender<Option<TrackBulkPasteResponse>>,
+}
+
+impl TrackBulkPasteApp {
+    /// 全項目を通して、いずれかで反映できる要素を選択肢とする。
+    fn available_parts(items: &[TrackBulkItem]) -> PasteParts {
+        let mut available = PasteParts {
+            values: false,
+            mode: false,
+            speed: false,
+            twopoint: false,
+            param: false,
+            timecontrol: false,
+        };
+
+        for item in items {
+            let source = &item.source_param;
+            available.values |= !source.values.is_empty();
+            available.mode = true;
+            available.speed |= source.mode.is_some();
+            available.twopoint |= source.mode.is_some();
+            available.param |= source.has_param_info() || item.target_param.has_param_info();
+            available.timecontrol |=
+                source.timecontrol.is_some() || item.target_param.timecontrol.is_some();
+        }
+
+        available
+    }
+
+    fn set_all_parts(&mut self, checked: bool) {
+        let available = self.available;
+        self.parts = PasteParts {
+            values: checked && available.values,
+            mode: checked && available.mode,
+            speed: checked && available.speed,
+            twopoint: checked && available.twopoint,
+            param: checked && available.param,
+            timecontrol: checked && available.timecontrol,
+        };
+    }
+
+    fn part_checkbox(ui: &mut egui::Ui, enabled: bool, checked: &mut bool, label: &str) {
+        if !enabled {
+            *checked = false;
+        }
+        ui.add_enabled(enabled, egui::Checkbox::new(checked, label));
+    }
+
+    fn response(&self) -> TrackBulkPasteResponse {
+        TrackBulkPasteResponse {
+            parts: self.parts,
+            items: self
+                .request
+                .items
+                .iter()
+                .zip(&self.checked)
+                .filter(|(_, checked)| **checked)
+                .map(|(item, _)| item.item.clone())
+                .collect(),
+            apply_to_selected: self.apply_to_selected,
+        }
+    }
+}
+
+impl eframe::App for TrackBulkPasteApp {
+    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        self.window.ensure_placed(ctx);
+
+        egui::TopBottomPanel::bottom("copy_alias_bulk_actions").show(ctx, |ui| {
+            ui.add_space(6.0);
+            ui.horizontal(|ui| {
+                let can_apply = !self.parts.is_empty() && self.checked.iter().any(|x| *x);
+                if ui
+                    .add_enabled(can_apply, egui::Button::new("貼り付け"))
+                    .clicked()
+                {
+                    let _ = self.sender.send(Some(self.response()));
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                }
+
+                if ui.button("キャンセル").clicked() {
+                    let _ = self.sender.send(None);
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                }
+            });
+            ui.add_space(6.0);
+        });
+
+        egui::CentralPanel::default().show(ctx, |ui| {
+            egui::ScrollArea::vertical()
+                .auto_shrink([false, false])
+                .show(ui, |ui| self.content(ui));
+        });
+    }
+}
+
+impl TrackBulkPasteApp {
+    fn content(&mut self, ui: &mut egui::Ui) {
+        ui.heading("エフェクトのトラックバーを一括ペースト");
+        ui.label(format!("貼り付け先: {}", self.request.target_label));
+        ui.separator();
+
+        ui.horizontal(|ui| {
+            ui.label("反映する要素:");
+            if ui.button("全選択").clicked() {
+                self.set_all_parts(true);
+            }
+            if ui.button("全解除").clicked() {
+                self.set_all_parts(false);
+            }
+        });
+        ui.add_space(2.0);
+
+        // 要素の選択は全項目で共通。
+        ui.horizontal_wrapped(|ui| {
+            Self::part_checkbox(ui, self.available.values, &mut self.parts.values, "値");
+            Self::part_checkbox(ui, self.available.mode, &mut self.parts.mode, "移動方法");
+            Self::part_checkbox(ui, self.available.speed, &mut self.parts.speed, "加速・減速");
+            Self::part_checkbox(
+                ui,
+                self.available.twopoint,
+                &mut self.parts.twopoint,
+                "中間点無視",
+            );
+            Self::part_checkbox(ui, self.available.param, &mut self.parts.param, "パラメータ");
+            Self::part_checkbox(
+                ui,
+                self.available.timecontrol,
+                &mut self.parts.timecontrol,
+                "時間制御データ",
+            );
+        });
+
+        ui.add_space(6.0);
+        ui.separator();
+
+        ui.horizontal(|ui| {
+            ui.label(format!("適用する項目 ({}件):", self.request.items.len()));
+            if ui.button("全選択").clicked() {
+                self.checked.iter_mut().for_each(|x| *x = true);
+            }
+            if ui.button("全解除").clicked() {
+                self.checked.iter_mut().for_each(|x| *x = false);
+            }
+        });
+        ui.add_space(2.0);
+
+        let mut adjusted = 0usize;
+        for (index, item) in self.request.items.iter().enumerate() {
+            let merged = track::merge(
+                &item.target_param,
+                &item.source_param,
+                &self.parts,
+                item.target_value_len,
+            );
+            if merged.adjust.is_adjusted() {
+                adjusted += 1;
+            }
+
+            if let Some(checked) = self.checked.get_mut(index) {
+                ui.horizontal(|ui| {
+                    ui.checkbox(checked, &item.item);
+                    ui.label(egui::RichText::new(&merged.value).monospace().weak());
+                });
+            }
+        }
+
+        if adjusted > 0 {
+            ui.add_space(4.0);
+            ui.colored_label(
+                ui.visuals().warn_fg_color,
+                format!("中間点数が異なるため、{adjusted}件の値の数を調整します。"),
+            );
+        }
+
+        if !self.request.unmatched.is_empty() {
+            ui.add_space(4.0);
+            ui.colored_label(
+                ui.visuals().weak_text_color(),
+                format!(
+                    "対応する項目が無いためスキップ: {}",
+                    self.request.unmatched.join(", ")
+                ),
+            );
+        }
+
+        if self.request.selected_object_count > 1 {
+            ui.add_space(6.0);
+            ui.checkbox(
+                &mut self.apply_to_selected,
+                format!(
+                    "選択中の全オブジェクト({}件)の同じエフェクトにも適用",
+                    self.request.selected_object_count
+                ),
+            );
+        }
+    }
+}
+
+pub(crate) fn show_track_bulk_paste_dialog(
+    request: TrackBulkPasteRequest,
+) -> AnyResult<Option<TrackBulkPasteResponse>> {
+    let (tx, rx) = std::sync::mpsc::channel::<Option<TrackBulkPasteResponse>>();
+    let window = DialogWindow::new([520.0, 520.0], [260.0, 260.0]);
+
+    eframe::run_native(
+        "CopyAlias - トラックバーの一括ペースト",
+        eframe::NativeOptions {
+            viewport: window.viewport(),
+            ..Default::default()
+        },
+        Box::new(move |cc| {
+            setup_dialog(cc);
+
+            let available = TrackBulkPasteApp::available_parts(&request.items);
+            let checked = vec![true; request.items.len()];
+            Ok(Box::new(TrackBulkPasteApp {
+                window,
+                request,
+                available,
+                parts: available,
+                checked,
+                apply_to_selected: false,
+                sender: tx,
+            }))
+        }),
+    )
+    .map_err(|e| aviutl2::anyhow::anyhow!("一括ペーストダイアログの起動に失敗しました: {e}"))?;
+
+    match rx.try_recv() {
+        Ok(result) => Ok(result),
+        Err(_) => Ok(None),
+    }
+}
+
 pub(crate) fn show_track_paste_dialog(
     request: TrackPasteRequest,
 ) -> AnyResult<Option<TrackPasteResponse>> {

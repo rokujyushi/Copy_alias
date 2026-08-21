@@ -407,6 +407,33 @@ fn adjust_track_value_for_object(
     )
 }
 
+/// 指定エフェクトが持つトラックバー項目を、エイリアスの並び順で列挙する。
+fn collect_effect_track_items(
+    edit_section: &aviutl2::generic::EditSection,
+    object: aviutl2::generic::ObjectHandle,
+    effect: &str,
+    effect_index: usize,
+) -> Vec<(String, TrackTarget)> {
+    let Ok(alias) = edit_section.object(object).get_alias() else {
+        return Vec::new();
+    };
+
+    parse_clipboard_ini_to_apply_items(&alias)
+        .into_iter()
+        .filter(|item| item.effect_name == effect && item.occurrence == effect_index)
+        .filter_map(|item| {
+            let target = read_track_target(
+                edit_section,
+                object,
+                effect,
+                effect_index,
+                &item.property_key,
+            )?;
+            Some((item.property_key, target))
+        })
+        .collect()
+}
+
 /// クリップボードのテキストからコピー元のトラックバー値を解決する。
 ///
 /// CopyAlias 形式・エイリアス形式・設定値そのものの順に解釈を試みる。
@@ -706,7 +733,193 @@ impl CopyAlias {
         Ok(())
     }
 
-    #[object_item(name = "トラックバーのパラメータをコピー", error = "log_only")]
+    #[object_item_and_effect(
+        name = "CopyAlias\\エフェクトのトラックバーを一括コピー",
+        error = "log_only"
+    )]
+    fn copy_effect_tracks(
+        object: aviutl2::generic::ObjectHandle,
+        effect: &str,
+        effect_index: usize,
+        _item: Option<&str>,
+    ) -> AnyResult<()> {
+        let clips = EDIT_HANDLE.call_edit_section(|edit_section| {
+            collect_effect_track_items(edit_section, object, effect, effect_index)
+                .into_iter()
+                .map(|(item, target)| track::TrackClip {
+                    effect: effect.to_string(),
+                    effect_index,
+                    item,
+                    param: target.param,
+                })
+                .collect::<Vec<_>>()
+        })?;
+
+        if clips.is_empty() {
+            let _ = aviutl2::logger::write_info_log(&format!(
+                "CopyAlias: 「{effect}」にトラックバー項目がありません。"
+            ));
+            return Ok(());
+        }
+
+        let mut clipboard = arboard::Clipboard::new()
+            .map_err(|e| aviutl2::anyhow::anyhow!("クリップボードを開けませんでした: {e}"))?;
+        clipboard
+            .set_text(track::to_clipboard_text_multi(&clips))
+            .map_err(|e| aviutl2::anyhow::anyhow!("クリップボードに書き込めませんでした: {e}"))?;
+
+        let names: Vec<&str> = clips.iter().map(|clip| clip.item.as_str()).collect();
+        let _ = aviutl2::logger::write_info_log(&format!(
+            "CopyAlias: 「{effect}」のトラックバー{}件をコピーしました: {}",
+            clips.len(),
+            names.join(", ")
+        ));
+
+        Ok(())
+    }
+
+    #[object_item_and_effect(
+        name = "CopyAlias\\エフェクトのトラックバーを一括ペースト",
+        error = "log_only"
+    )]
+    fn paste_effect_tracks(
+        object: aviutl2::generic::ObjectHandle,
+        effect: &str,
+        effect_index: usize,
+        _item: Option<&str>,
+    ) -> AnyResult<()> {
+        let mut clipboard = arboard::Clipboard::new()
+            .map_err(|e| aviutl2::anyhow::anyhow!("クリップボードを開けませんでした: {e}"))?;
+        let clip_text = clipboard.get_text().map_err(|e| {
+            aviutl2::anyhow::anyhow!("クリップボードのテキスト取得に失敗しました: {e}")
+        })?;
+
+        let sources = track::from_clipboard_text_multi(&clip_text);
+        if sources.is_empty() {
+            let _ = aviutl2::logger::write_info_log(
+                "CopyAlias: クリップボードに CopyAlias 形式のトラックバーデータがありません。",
+            );
+            return Ok(());
+        }
+
+        // 項目名の一致で対応付ける（コピー元のエフェクト名は問わない）。
+        let (items, unmatched, selected_object_count) =
+            EDIT_HANDLE.call_edit_section(|edit_section| {
+                let targets = collect_effect_track_items(edit_section, object, effect, effect_index);
+                let selected = edit_section.get_selected_objects().unwrap_or_default();
+
+                let mut items = Vec::new();
+                let mut unmatched = Vec::new();
+
+                for source in &sources {
+                    match targets.iter().find(|(name, _)| *name == source.item) {
+                        Some((name, target)) => items.push(gui::TrackBulkItem {
+                            item: name.clone(),
+                            source_param: source.param.clone(),
+                            target_param: target.param.clone(),
+                            target_value_len: target.value_len,
+                        }),
+                        None => unmatched.push(source.item.clone()),
+                    }
+                }
+
+                (items, unmatched, selected.len())
+            })?;
+
+        if items.is_empty() {
+            let _ = aviutl2::logger::write_info_log(&format!(
+                "CopyAlias: 「{effect}」に一致するトラックバー項目がありませんでした。"
+            ));
+            return Ok(());
+        }
+
+        let target_label = if effect_index > 0 {
+            format!("{effect} ({})", effect_index + 1)
+        } else {
+            effect.to_string()
+        };
+
+        let Some(response) = gui::show_track_bulk_paste_dialog(gui::TrackBulkPasteRequest {
+            target_label,
+            items,
+            unmatched,
+            selected_object_count,
+        })?
+        else {
+            let _ = aviutl2::logger::write_info_log(
+                "CopyAlias: トラックバーの一括ペーストをキャンセルしました。",
+            );
+            return Ok(());
+        };
+
+        if response.items.is_empty() {
+            let _ =
+                aviutl2::logger::write_info_log("CopyAlias: 適用する項目が選択されていません。");
+            return Ok(());
+        }
+
+        let mut targets = vec![object];
+        let summary = EDIT_HANDLE.call_edit_section(move |edit_section| {
+            if response.apply_to_selected {
+                for selected in edit_section.get_selected_objects().unwrap_or_default() {
+                    if !targets.contains(&selected) {
+                        targets.push(selected);
+                    }
+                }
+            }
+
+            let mut summary = TrackPasteSummary {
+                targets: targets.len(),
+                ..TrackPasteSummary::default()
+            };
+
+            for handle in targets {
+                // 対象ごとに現在値と区間数を読み直す。
+                let current = collect_effect_track_items(edit_section, handle, effect, effect_index);
+
+                for name in &response.items {
+                    let Some(source) = sources.iter().find(|clip| clip.item == *name) else {
+                        continue;
+                    };
+                    let Some((_, target)) = current.iter().find(|(item, _)| item == name) else {
+                        summary.skipped += 1;
+                        continue;
+                    };
+
+                    let merged = track::merge(
+                        &target.param,
+                        &source.param,
+                        &response.parts,
+                        target.value_len,
+                    );
+                    if merged.adjust.is_adjusted() {
+                        summary.adjusted += 1;
+                    }
+
+                    match edit_section.object(handle).set_effect_item(
+                        effect,
+                        effect_index,
+                        name,
+                        &merged.value,
+                    ) {
+                        Ok(()) => summary.applied += 1,
+                        Err(_) => summary.failed += 1,
+                    }
+                }
+            }
+
+            summary
+        })?;
+
+        let _ = aviutl2::logger::write_info_log(&format!(
+            "CopyAlias: トラックバー一括ペースト / 対象オブジェクト: {} / 適用成功: {} / 項目なしスキップ: {} / 設定失敗: {} / 値数調整: {}",
+            summary.targets, summary.applied, summary.skipped, summary.failed, summary.adjusted
+        ));
+
+        Ok(())
+    }
+
+    #[object_item(name = "CopyAlias\\トラックバーのパラメータをコピー", error = "log_only")]
     fn copy_track_param(
         object: aviutl2::generic::ObjectHandle,
         effect: &str,
@@ -745,7 +958,7 @@ impl CopyAlias {
         Ok(())
     }
 
-    #[object_item(name = "トラックバーのパラメータをペースト", error = "log_only")]
+    #[object_item(name = "CopyAlias\\トラックバーのパラメータをペースト", error = "log_only")]
     fn paste_track_param(
         object: aviutl2::generic::ObjectHandle,
         effect: &str,
