@@ -2,6 +2,8 @@ use aviutl2::AnyResult;
 use ini::Ini;
 
 mod gui;
+mod i18n;
+mod settings;
 mod track;
 
 #[derive(Debug, Clone)]
@@ -501,7 +503,57 @@ impl aviutl2::generic::GenericPlugin for CopyAlias {
 
     fn register(&mut self, registry: &mut aviutl2::generic::HostAppHandle) {
         EDIT_HANDLE.init(registry.create_edit_handle());
-        registry.register_menus::<CopyAlias>();
+
+        // 設定項目メニューをサブメニューにまとめるかは設定ファイルで切り替える。
+        let grouped = settings::load().group_item_menus;
+
+        // メニュー名は言語設定で切り替えるため、属性マクロではなく手動で登録する。
+        registry.register_object_menu(&i18n::t("エイリアスをコピー"), || {
+            log_menu_error(Self::copy_aliases())
+        });
+        registry.register_object_menu(&i18n::t("エイリアスの値をペースト"), || {
+            log_menu_error(Self::paste_alias_values())
+        });
+        registry.register_layer_menu(&i18n::t("クリップボードからオブジェクト貼り付け"), || {
+            log_menu_error(Self::paste_objects_from_clipboard())
+        });
+        registry.register_object_menu(&i18n::t("エイリアスからパスをコピー"), || {
+            log_menu_error(Self::copy_path_from_alias())
+        });
+
+        registry.register_object_item_menu(
+            &i18n::item_menu("トラックバーのパラメータをコピー", grouped),
+            |object, effect, index, item| {
+                log_menu_error(Self::copy_track_param(object, effect, index, item))
+            },
+        );
+        registry.register_object_item_menu(
+            &i18n::item_menu("トラックバーのパラメータをペースト", grouped),
+            |object, effect, index, item| {
+                log_menu_error(Self::paste_track_param(object, effect, index, item))
+            },
+        );
+        registry.register_object_item_and_effect_menu(
+            &i18n::item_menu("エフェクトのトラックバーを一括コピー", grouped),
+            |object, effect, index, _item| {
+                log_menu_error(Self::copy_effect_tracks(object, effect, index))
+            },
+        );
+        registry.register_object_item_and_effect_menu(
+            &i18n::item_menu("エフェクトのトラックバーを一括ペースト", grouped),
+            |object, effect, index, _item| {
+                log_menu_error(Self::paste_effect_tracks(object, effect, index))
+            },
+        );
+    }
+}
+
+/// メニュー処理のエラーをログへ出す。
+///
+/// 属性マクロの `error = "log_only"` と同じ扱いで、ホストへは伝播させない。
+fn log_menu_error(result: AnyResult<()>) {
+    if let Err(error) = result {
+        let _ = aviutl2::logger::write_error_log(&format!("CopyAlias: {error:#}"));
     }
 }
 
@@ -513,9 +565,7 @@ impl Drop for CopyAlias {
     }
 }
 
-#[aviutl2::generic::menus]
 impl CopyAlias {
-    #[object(name = "エイリアスをコピー", error = "log_only")]
     fn copy_aliases() -> AnyResult<()> {
         let joined =
             EDIT_HANDLE.call_edit_section(|edit_section| -> AnyResult<Option<String>> {
@@ -554,7 +604,6 @@ impl CopyAlias {
         Ok(())
     }
 
-    #[object(name = "エイリアスの値をペースト", error = "log_only")]
     fn paste_alias_values() -> AnyResult<()> {
         // メニュー実行時点の選択対象を保持する（ダイアログ表示で選択状態が変わる対策）
         let selected_objects =
@@ -649,7 +698,6 @@ impl CopyAlias {
         Ok(())
     }
 
-    #[layer(name = "クリップボードからオブジェクト貼り付け", error = "log_only")]
     fn paste_objects_from_clipboard() -> AnyResult<()> {
         // 実行時点の貼り付け基準位置（選択オブジェクト優先）を先に確定する
         let base =
@@ -733,15 +781,10 @@ impl CopyAlias {
         Ok(())
     }
 
-    #[object_item_and_effect(
-        name = "CopyAlias\\エフェクトのトラックバーを一括コピー",
-        error = "log_only"
-    )]
     fn copy_effect_tracks(
         object: aviutl2::generic::ObjectHandle,
         effect: &str,
         effect_index: usize,
-        _item: Option<&str>,
     ) -> AnyResult<()> {
         let clips = EDIT_HANDLE.call_edit_section(|edit_section| {
             collect_effect_track_items(edit_section, object, effect, effect_index)
@@ -778,15 +821,10 @@ impl CopyAlias {
         Ok(())
     }
 
-    #[object_item_and_effect(
-        name = "CopyAlias\\エフェクトのトラックバーを一括ペースト",
-        error = "log_only"
-    )]
     fn paste_effect_tracks(
         object: aviutl2::generic::ObjectHandle,
         effect: &str,
         effect_index: usize,
-        _item: Option<&str>,
     ) -> AnyResult<()> {
         let mut clipboard = arboard::Clipboard::new()
             .map_err(|e| aviutl2::anyhow::anyhow!("クリップボードを開けませんでした: {e}"))?;
@@ -919,7 +957,6 @@ impl CopyAlias {
         Ok(())
     }
 
-    #[object_item(name = "CopyAlias\\トラックバーのパラメータをコピー", error = "log_only")]
     fn copy_track_param(
         object: aviutl2::generic::ObjectHandle,
         effect: &str,
@@ -958,7 +995,6 @@ impl CopyAlias {
         Ok(())
     }
 
-    #[object_item(name = "CopyAlias\\トラックバーのパラメータをペースト", error = "log_only")]
     fn paste_track_param(
         object: aviutl2::generic::ObjectHandle,
         effect: &str,
@@ -1071,7 +1107,6 @@ impl CopyAlias {
         Ok(())
     }
 
-    #[object(name = "エイリアスからパスをコピー", error = "log_only")]
     fn copy_path_from_alias() -> AnyResult<()> {
         let selected_objects =
             EDIT_HANDLE.call_edit_section(|edit_section| -> AnyResult<_> {

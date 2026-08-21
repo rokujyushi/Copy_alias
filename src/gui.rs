@@ -3,6 +3,7 @@ use eframe::egui;
 use egui_ltreeview::{NodeBuilder, TreeView};
 
 use crate::ApplyItem;
+use crate::i18n::{t, tf};
 use crate::track::{self, PasteParts, TrackParam};
 
 static DIALOG_CONTEXTS: std::sync::OnceLock<std::sync::Mutex<Vec<egui::Context>>> =
@@ -268,16 +269,16 @@ impl eframe::App for PathSelectApp {
         self.window.ensure_placed(ctx);
 
         egui::CentralPanel::default().show(ctx, |ui| {
-            ui.heading("コピーするパスを選択");
-            ui.label("複数の候補が見つかりました。1つ選択してください。");
+            ui.heading(t("コピーするパスを選択"));
+            ui.label(t("複数の候補が見つかりました。1つ選択してください。"));
             ui.separator();
 
-            egui::ComboBox::from_label("パス候補")
+            egui::ComboBox::from_label(t("パス候補"))
                 .selected_text(
                     self.paths
                         .get(self.selected)
                         .cloned()
-                        .unwrap_or_else(|| "(候補なし)".to_string()),
+                        .unwrap_or_else(|| t("(候補なし)")),
                 )
                 .show_ui(ui, |ui| {
                     for (idx, p) in self.paths.iter().enumerate() {
@@ -287,12 +288,12 @@ impl eframe::App for PathSelectApp {
 
             ui.add_space(8.0);
             ui.horizontal(|ui| {
-                if ui.button("コピー").clicked() {
+                if ui.button(t("コピー")).clicked() {
                     let selected = self.paths.get(self.selected).cloned();
                     let _ = self.sender.send(selected);
                     ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                 }
-                if ui.button("キャンセル").clicked() {
+                if ui.button(t("キャンセル")).clicked() {
                     let _ = self.sender.send(None);
                     ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                 }
@@ -431,7 +432,7 @@ impl eframe::App for ApplyDialogApp {
         egui::TopBottomPanel::bottom("copy_alias_apply_actions").show(ctx, |ui| {
             ui.add_space(6.0);
             ui.horizontal(|ui| {
-                if ui.button("適用").clicked() {
+                if ui.button(t("適用")).clicked() {
                     let selected = self
                         .items
                         .iter()
@@ -442,7 +443,7 @@ impl eframe::App for ApplyDialogApp {
                     ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                 }
 
-                if ui.button("閉じる").clicked() {
+                if ui.button(t("閉じる")).clicked() {
                     let _ = self.sender.send(None);
                     ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                 }
@@ -451,15 +452,15 @@ impl eframe::App for ApplyDialogApp {
         });
 
         egui::CentralPanel::default().show(ctx, |ui| {
-            ui.heading("反映するプロパティを選択");
-            ui.label("チェックを外した項目は適用しません。");
+            ui.heading(t("反映するプロパティを選択"));
+            ui.label(t("チェックを外した項目は適用しません。"));
             ui.separator();
 
             ui.horizontal(|ui| {
-                if ui.button("全選択").clicked() {
+                if ui.button(t("全選択")).clicked() {
                     self.set_all_checked(true);
                 }
-                if ui.button("全解除").clicked() {
+                if ui.button(t("全解除")).clicked() {
                     self.set_all_checked(false);
                 }
             });
@@ -481,7 +482,7 @@ impl eframe::App for ApplyDialogApp {
                                         .label_ui(|ui| {
                                             ui.checkbox(
                                                 &mut block_checked,
-                                                format!("ブロック {}", block.block_index + 1),
+                                                tf("ブロック {}", &[&(block.block_index + 1).to_string()]),
                                             );
                                         }),
                                 );
@@ -632,10 +633,10 @@ impl TrackPasteApp {
 
     fn speed_label(param: &TrackParam) -> String {
         match (param.accelerate(), param.decelerate()) {
-            (true, true) => "加速 + 減速".to_string(),
-            (true, false) => "加速".to_string(),
-            (false, true) => "減速".to_string(),
-            (false, false) => "なし".to_string(),
+            (true, true) => t("加速 + 減速"),
+            (true, false) => t("加速"),
+            (false, true) => t("減速"),
+            (false, false) => t("なし"),
         }
     }
 
@@ -668,7 +669,7 @@ impl eframe::App for TrackPasteApp {
             ui.horizontal(|ui| {
                 let can_apply = !self.parts.is_empty();
                 if ui
-                    .add_enabled(can_apply, egui::Button::new("貼り付け"))
+                    .add_enabled(can_apply, egui::Button::new(t("貼り付け")))
                     .clicked()
                 {
                     let _ = self.sender.send(Some(TrackPasteResponse {
@@ -678,7 +679,7 @@ impl eframe::App for TrackPasteApp {
                     ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                 }
 
-                if ui.button("キャンセル").clicked() {
+                if ui.button(t("キャンセル")).clicked() {
                     let _ = self.sender.send(None);
                     ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                 }
@@ -699,17 +700,17 @@ impl TrackPasteApp {
         let source = self.request.source_param.clone();
 
         {
-            ui.heading("トラックバーのパラメータを貼り付け");
-            ui.label(format!("貼り付け先: {}", self.request.target_label));
-            ui.label(format!("コピー元: {}", self.request.source_label));
+            ui.heading(t("トラックバーのパラメータを貼り付け"));
+            ui.label(tf("貼り付け先: {}", &[&self.request.target_label]));
+            ui.label(tf("コピー元: {}", &[&self.request.source_label]));
             ui.separator();
 
             ui.horizontal(|ui| {
-                ui.label("反映する要素:");
-                if ui.button("全選択").clicked() {
+                ui.label(t("反映する要素:"));
+                if ui.button(t("全選択")).clicked() {
                     self.set_all_checked(true);
                 }
-                if ui.button("全解除").clicked() {
+                if ui.button(t("全解除")).clicked() {
                     self.set_all_checked(false);
                 }
             });
@@ -727,7 +728,7 @@ impl TrackPasteApp {
                 self.available.mode,
                 &mut self.parts.mode,
                 "移動方法",
-                source.mode.as_deref().unwrap_or("移動無し"),
+                &source.mode.clone().unwrap_or_else(|| t("移動無し")),
             );
             Self::checkbox_row(
                 ui,
@@ -741,13 +742,13 @@ impl TrackPasteApp {
                 self.available.twopoint,
                 &mut self.parts.twopoint,
                 "中間点無視",
-                if source.twopoint() { "ON" } else { "OFF" },
+                &t(if source.twopoint() { "ON" } else { "OFF" }),
             );
             let param_label = match (source.param.as_deref(), source.reference()) {
-                (Some(value), true) => format!("{value}（参照式）"),
+                (Some(value), true) => tf("{}（参照式）", &[value]),
                 (Some(value), false) => value.to_string(),
-                (None, true) => "（参照式）".to_string(),
-                (None, false) => "(なし)".to_string(),
+                (None, true) => t("（参照式）"),
+                (None, false) => t("(なし)"),
             };
             Self::checkbox_row(
                 ui,
@@ -761,7 +762,7 @@ impl TrackPasteApp {
                 self.available.timecontrol,
                 &mut self.parts.timecontrol,
                 "時間制御データ",
-                source.timecontrol.as_deref().unwrap_or("(なし)"),
+                &source.timecontrol.clone().unwrap_or_else(|| t("(なし)")),
             );
 
             ui.add_space(6.0);
@@ -774,24 +775,33 @@ impl TrackPasteApp {
                 self.request.target_value_len,
             );
 
-            ui.label("適用後の値:");
+            ui.label(t("適用後の値:"));
             // 外側がスクロール領域なので、ここは折り返すだけにする。
             ui.add(egui::Label::new(egui::RichText::new(&merged.value).monospace()).wrap());
 
-            if let Some(description) = merged.adjust.describe() {
-                ui.colored_label(
-                    ui.visuals().warn_fg_color,
-                    format!("中間点数が異なるため、{description}。"),
-                );
+            // 文言の組み立てはUI側で行い、track.rs は翻訳に依存させない。
+            let adjust_message = match merged.adjust {
+                track::ValueAdjust::Keep => None,
+                track::ValueAdjust::Truncated { from, to } => Some(tf(
+                    "中間点数が異なるため、値の数を {} → {} に切り詰めます。",
+                    &[&from.to_string(), &to.to_string()],
+                )),
+                track::ValueAdjust::Extended { from, to } => Some(tf(
+                    "中間点数が異なるため、値の数を {} → {} に補完します。",
+                    &[&from.to_string(), &to.to_string()],
+                )),
+            };
+            if let Some(message) = adjust_message {
+                ui.colored_label(ui.visuals().warn_fg_color, message);
             }
 
             if self.request.selected_object_count > 1 {
                 ui.add_space(4.0);
                 ui.checkbox(
                     &mut self.apply_to_selected,
-                    format!(
+                    tf(
                         "選択中の全オブジェクト({}件)の同じ項目にも適用",
-                        self.request.selected_object_count
+                        &[&self.request.selected_object_count.to_string()],
                     ),
                 );
             }
@@ -916,14 +926,14 @@ impl eframe::App for TrackBulkPasteApp {
             ui.horizontal(|ui| {
                 let can_apply = !self.parts.is_empty() && self.checked.iter().any(|x| *x);
                 if ui
-                    .add_enabled(can_apply, egui::Button::new("貼り付け"))
+                    .add_enabled(can_apply, egui::Button::new(t("貼り付け")))
                     .clicked()
                 {
                     let _ = self.sender.send(Some(self.response()));
                     ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                 }
 
-                if ui.button("キャンセル").clicked() {
+                if ui.button(t("キャンセル")).clicked() {
                     let _ = self.sender.send(None);
                     ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                 }
@@ -941,16 +951,16 @@ impl eframe::App for TrackBulkPasteApp {
 
 impl TrackBulkPasteApp {
     fn content(&mut self, ui: &mut egui::Ui) {
-        ui.heading("エフェクトのトラックバーを一括ペースト");
-        ui.label(format!("貼り付け先: {}", self.request.target_label));
+        ui.heading(t("エフェクトのトラックバーを一括ペースト"));
+        ui.label(tf("貼り付け先: {}", &[&self.request.target_label]));
         ui.separator();
 
         ui.horizontal(|ui| {
-            ui.label("反映する要素:");
-            if ui.button("全選択").clicked() {
+            ui.label(t("反映する要素:"));
+            if ui.button(t("全選択")).clicked() {
                 self.set_all_parts(true);
             }
-            if ui.button("全解除").clicked() {
+            if ui.button(t("全解除")).clicked() {
                 self.set_all_parts(false);
             }
         });
@@ -980,11 +990,11 @@ impl TrackBulkPasteApp {
         ui.separator();
 
         ui.horizontal(|ui| {
-            ui.label(format!("適用する項目 ({}件):", self.request.items.len()));
-            if ui.button("全選択").clicked() {
+            ui.label(tf("適用する項目 ({}件):", &[&self.request.items.len().to_string()]));
+            if ui.button(t("全選択")).clicked() {
                 self.checked.iter_mut().for_each(|x| *x = true);
             }
-            if ui.button("全解除").clicked() {
+            if ui.button(t("全解除")).clicked() {
                 self.checked.iter_mut().for_each(|x| *x = false);
             }
         });
@@ -1014,7 +1024,10 @@ impl TrackBulkPasteApp {
             ui.add_space(4.0);
             ui.colored_label(
                 ui.visuals().warn_fg_color,
-                format!("中間点数が異なるため、{adjusted}件の値の数を調整します。"),
+                tf(
+                    "中間点数が異なるため、{}件の値の数を調整します。",
+                    &[&adjusted.to_string()],
+                ),
             );
         }
 
@@ -1022,9 +1035,9 @@ impl TrackBulkPasteApp {
             ui.add_space(4.0);
             ui.colored_label(
                 ui.visuals().weak_text_color(),
-                format!(
+                tf(
                     "対応する項目が無いためスキップ: {}",
-                    self.request.unmatched.join(", ")
+                    &[&self.request.unmatched.join(", ")],
                 ),
             );
         }
@@ -1033,9 +1046,9 @@ impl TrackBulkPasteApp {
             ui.add_space(6.0);
             ui.checkbox(
                 &mut self.apply_to_selected,
-                format!(
+                tf(
                     "選択中の全オブジェクト({}件)の同じエフェクトにも適用",
-                    self.request.selected_object_count
+                    &[&self.request.selected_object_count.to_string()],
                 ),
             );
         }
@@ -1049,7 +1062,7 @@ pub(crate) fn show_track_bulk_paste_dialog(
     let window = DialogWindow::new([520.0, 520.0], [260.0, 260.0]);
 
     eframe::run_native(
-        "CopyAlias - トラックバーの一括ペースト",
+        &format!("CopyAlias - {}", t("トラックバーの一括ペースト")),
         eframe::NativeOptions {
             viewport: window.viewport(),
             ..Default::default()
@@ -1085,7 +1098,7 @@ pub(crate) fn show_track_paste_dialog(
     let window = DialogWindow::new([460.0, 480.0], [230.0, 240.0]);
 
     eframe::run_native(
-        "CopyAlias - トラックバーの貼り付け",
+        &format!("CopyAlias - {}", t("トラックバーの貼り付け")),
         eframe::NativeOptions {
             viewport: window.viewport(),
             ..Default::default()
@@ -1125,7 +1138,7 @@ pub(crate) fn show_path_select_dialog(paths: Vec<String>) -> AnyResult<Option<St
     let window = DialogWindow::new([420.0, 160.0], [210.0, 80.0]);
 
     eframe::run_native(
-        "CopyAlias - パス選択",
+        &format!("CopyAlias - {}", t("パス選択")),
         eframe::NativeOptions {
             viewport: window.viewport(),
             ..Default::default()
@@ -1154,7 +1167,7 @@ pub(crate) fn show_apply_dialog(items: Vec<ApplyItem>) -> AnyResult<Option<Vec<A
     let window = DialogWindow::new([420.0, 480.0], [210.0, 240.0]);
 
     eframe::run_native(
-        "CopyAlias - プロパティ選択",
+        &format!("CopyAlias - {}", t("プロパティ選択")),
         eframe::NativeOptions {
             viewport: window.viewport(),
             ..Default::default()

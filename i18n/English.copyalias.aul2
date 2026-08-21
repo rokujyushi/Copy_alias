@@ -1,1 +1,78 @@
-[English.copyalias.aux2]
+; CopyAlias の英語表示定義
+; セクション名はプラグインのファイル名（CopyAlias.aux2）にする必要がある
+; ファイル名をマルチピリオドにしているため「English」の設定へ上書き結合される
+
+[CopyAlias.aux2]
+
+; --- メニュー（レイヤー編集） ---
+エイリアスをコピー=Copy Alias
+エイリアスの値をペースト=Paste Alias Values
+クリップボードからオブジェクト貼り付け=Paste Object from Clipboard
+エイリアスからパスをコピー=Copy Path from Alias
+
+; --- メニュー（オブジェクト設定） ---
+トラックバーのパラメータをコピー=Copy Trackbar Parameter
+トラックバーのパラメータをペースト=Paste Trackbar Parameter
+エフェクトのトラックバーを一括コピー=Copy All Trackbars in Effect
+エフェクトのトラックバーを一括ペースト=Paste All Trackbars in Effect
+
+; --- ウィンドウタイトル ---
+プロパティ選択=Select Properties
+パス選択=Select Path
+トラックバーの貼り付け=Paste Trackbar
+トラックバーの一括ペースト=Paste Trackbars
+
+; --- 共通 ---
+全選択=Select All
+全解除=Clear All
+適用=Apply
+閉じる=Close
+コピー=Copy
+キャンセル=Cancel
+貼り付け=Paste
+
+; --- プロパティ選択ダイアログ ---
+反映するプロパティを選択=Select properties to apply
+チェックを外した項目は適用しません。=Unchecked items will not be applied.
+ブロック {}=Block {}
+
+; --- パス選択ダイアログ ---
+コピーするパスを選択=Select a path to copy
+複数の候補が見つかりました。1つ選択してください。=Multiple candidates found. Please select one.
+パス候補=Candidates
+(候補なし)=(none)
+
+; --- トラックバーの貼り付け ---
+トラックバーのパラメータを貼り付け=Paste Trackbar Parameter
+エフェクトのトラックバーを一括ペースト=Paste All Trackbars in Effect
+貼り付け先: {}=Paste to: {}
+コピー元: {}=Copied from: {}
+反映する要素:=Elements to apply:
+適用する項目 ({}件):=Items to apply ({}):
+適用後の値:=Resulting value:
+
+; 要素名
+値=Value
+移動方法=Movement
+加速・減速=Acceleration
+中間点無視=Ignore Midpoints
+パラメータ=Parameter
+時間制御データ=Time Control
+
+; 値の表示
+移動無し=None
+加速 + 減速=Accelerate + Decelerate
+加速=Accelerate
+減速=Decelerate
+なし=None
+(なし)=(none)
+（参照式）=(reference)
+{}（参照式）={} (reference)
+
+; 通知
+中間点数が異なるため、値の数を {} → {} に切り詰めます。=Midpoint count differs: values will be truncated from {} to {}.
+中間点数が異なるため、値の数を {} → {} に補完します。=Midpoint count differs: values will be extended from {} to {}.
+中間点数が異なるため、{}件の値の数を調整します。=Midpoint count differs: {} item(s) will be adjusted.
+対応する項目が無いためスキップ: {}=Skipped (no matching item): {}
+選択中の全オブジェクト({}件)の同じ項目にも適用=Also apply to the same item on all selected objects ({})
+選択中の全オブジェクト({}件)の同じエフェクトにも適用=Also apply to the same effect on all selected objects ({})

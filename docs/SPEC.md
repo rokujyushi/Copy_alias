@@ -1,6 +1,6 @@
 # CopyAlias 仕様書
 
-- 対象バージョン: **CopyAlias v2.1.0**（Rust 実装）
+- 対象バージョン: **CopyAlias v2.2.0**（Rust 実装）
 - 対象ホスト: **AviUtl ExEdit2 2.1.4**（開発環境で動作確認したバージョン。`aviutl2.toml` は `aviutl2_version = "latest"` 運用のため随時更新される）
 - プラグイン種別: **汎用プラグイン (.aux2)**
 - 参照 SDK: `I:\aviutl2_sdk_mirror`（`include/aviutl2_sdk/plugin2.h`, `logger2.h`）
@@ -23,9 +23,9 @@
 | 7 | 設定項目メニュー | エフェクトのトラックバーを一括コピー | エフェクトが持つ全トラックバー項目の値をまとめてコピー |
 | 8 | 設定項目メニュー | エフェクトのトラックバーを一括ペースト | 項目名の一致で対応付け、要素を選んでまとめて適用 |
 
-設定項目メニュー（5〜8）は `CopyAlias\` のサブメニュー配下に登録する。
+設定項目メニュー（5〜8）は既定でフラットに登録する。設定でサブメニューへまとめられる（§6.6）。
 
-実装は [src/lib.rs](../src/lib.rs)（ロジック）、[src/gui.rs](../src/gui.rs)（ダイアログ）、[src/track.rs](../src/track.rs)（トラックバー値の分解・再構築）の3ファイル。
+実装は [src/lib.rs](../src/lib.rs)（ロジック）、[src/gui.rs](../src/gui.rs)（ダイアログ）、[src/track.rs](../src/track.rs)（トラックバー値の分解・再構築）、[src/i18n.rs](../src/i18n.rs)（言語対応）、[src/settings.rs](../src/settings.rs)（設定）の5ファイル。
 
 ---
 
@@ -53,18 +53,29 @@ impl aviutl2::generic::GenericPlugin for CopyAlias {
 | 処理 | 対応する SDK API |
 |---|---|
 | `EDIT_HANDLE.init(registry.create_edit_handle())` | `HOST_APP_TABLE::create_edit_handle` |
-| `registry.register_menus::<CopyAlias>()` | `register_object_menu` / `register_layer_menu` / `register_object_item_menu` |
+| 各メニューの登録 | `register_object_menu` / `register_layer_menu` / `register_object_item_menu` |
 
-メニュー登録に使う属性と対応する SDK API:
+メニュー登録に使うメソッドと対応する SDK API:
 
-| 属性 | 表示場所 | SDK API |
+| メソッド | 表示場所 | SDK API |
 |---|---|---|
-| `#[object(name = ...)]` | レイヤー編集でオブジェクト選択時の右クリック | `register_object_menu` |
-| `#[layer(name = ...)]` | レイヤー編集でオブジェクト未選択時の右クリック | `register_layer_menu` |
-| `#[object_item(name = ...)]` | オブジェクト設定ウィンドウの設定項目の右クリック | `register_object_item_menu`（`allow_effect_only = false`） |
-| `#[object_item_and_effect(name = ...)]` | 同上に加えて**エフェクト名の右クリック**（`item` が `None` で呼ばれる） | `register_object_item_menu`（`allow_effect_only = true`） |
+| `register_object_menu` | レイヤー編集でオブジェクト選択時の右クリック | `register_object_menu_param` |
+| `register_layer_menu` | レイヤー編集でオブジェクト未選択時の右クリック | `register_layer_menu_param` |
+| `register_object_item_menu` | オブジェクト設定ウィンドウの**設定項目**の右クリック | `register_object_item_menu_param`（`allow_effect_only = false`） |
+| `register_object_item_and_effect_menu` | 同上に加えて**エフェクト名**の右クリック（`item` が `None` で呼ばれる） | 同上（`allow_effect_only = true`） |
 
-`#[object_item]` のコールバックは `(ObjectHandle, effect: &str, effect_index: usize, item: &str)` を受け取り、**編集セクションの外側**で呼ばれる（SDK の `register_object_item_menu_param` 版）。メニュー名に `\` を含めると階層化できる仕様だが、本プラグインは全てフラットで登録している。
+crate には `#[object(name = ...)]` などの属性マクロもあるが、**メニュー名を言語設定で切り替えるため使っていない**（属性は文字列リテラルしか受け取れず、`translate()` の結果を渡せない）。代わりに `register()` 内で手動登録し、エラーは `log_menu_error` でログへ出す（属性の `error = "log_only"` と同じ扱い）。
+
+設定項目メニューのコールバックは**編集セクションの外側**で呼ばれるため、編集する場合は自前で `call_edit_section` を呼ぶ。メニュー名に `\` を含めると階層化できるが、**既定ではフラットに登録**する（§6.6 の設定で `CopyAlias\` 配下へまとめられる）。
+
+実機で確認した設定項目メニューの挙動:
+
+| 右クリック位置 | 結果 |
+|---|---|
+| 設定項目 | `item = Some(項目名)` で呼ばれる |
+| エフェクト名 | `item = None` で呼ばれる（`allow_effect_only = true` のときのみ） |
+| ウィンドウの空白部分 | **メニューが表示されない** |
+| 複数選択時 | `get_selected_objects()` で選択リストを取得でき、右クリック対象も含まれる（位置は先頭とは限らない） |
 
 ### 2.2 編集セクション
 
@@ -433,6 +444,54 @@ Win32 の呼び出しが失敗した場合や Windows 以外では、クラン�
 | トラックバー値の解釈不可 | info | `クリップボードからトラックバーのパラメータを読み取れませんでした。` |
 | トラックバー貼り付け結果 | info | `トラックバー貼り付け / 対象: n / 適用成功: n / 項目なしスキップ: n / 設定失敗: n / 値数調整: n` |
 | 終了時 | info | `プラグインを終了します。` |
+
+---
+
+## 6.5 言語対応
+
+[src/i18n.rs](../src/i18n.rs)
+
+SDK の `CONFIG_HANDLE::translate` を使う。**参照されるセクションはプラグインのファイル名**（`CopyAlias.aux2`）で、未定義のキーは元の日本語がそのまま返る。
+
+```ini
+[CopyAlias.aux2]
+エイリアスをコピー=Copy Alias
+貼り付け先: {}=Paste to: {}
+```
+
+| 関数 | 用途 |
+|---|---|
+| `i18n::t(text)` | 文言をそのまま置き換える |
+| `i18n::tf(text, args)` | 翻訳後の文字列に対して `{}` を順に置換する（言語ごとに語順を変えられる） |
+| `i18n::item_menu(text, grouped)` | 設定項目メニュー名を組み立てる（`grouped` が真なら `CopyAlias\` を前置） |
+
+- 翻訳の対象は**メニュー名とダイアログの文言**。ログは開発者向けのため日本語のまま
+- メニュー名は `register()` で一度だけ解決される。言語を切り替えた場合の反映には AviUtl2 の再起動が必要
+- サブメニューの接頭辞 `CopyAlias` はプラグイン名なので翻訳しない（言語ファイルのキーに `\` を含めずに済む）
+- [src/track.rs](../src/track.rs) は翻訳に依存させない。値数調整の通知文などは UI 側で組み立てる（ユニットテストが言語設定へ依存しないようにするため）
+
+同梱の [i18n/English.copyalias.aul2](../i18n/English.copyalias.aul2) は `Language/English.copyalias.aul2` へ配置される（`aviutl2.toml` のアーティファクト定義）。ファイル名がマルチピリオドなので、AviUtl2 の「English」設定へ上書き結合される。
+
+## 6.6 設定
+
+[src/settings.rs](../src/settings.rs)
+
+アプリケーションデータフォルダ（`aviutl2::config::app_data_path()`、通常は `ProgramData\aviutl2`）の `CopyAlias.ini` から読む。
+
+```ini
+[CopyAlias]
+; オブジェクト設定の右クリックメニューを「CopyAlias」サブメニューにまとめるか
+; 0 = まとめない（既定） / 1 = まとめる
+submenu=0
+```
+
+| キー | 既定 | 内容 |
+|---|---|---|
+| `submenu` | `0` | 設定項目メニュー（§1 の 5〜8）を `CopyAlias\` サブメニュー配下へまとめる |
+
+- 真偽値は `1` / `true` / `yes` / `on` を真として扱う（大小文字は問わない）
+- ファイルが無い場合は既定値で動作し、編集できるようテンプレートを書き出す（書き込みに失敗しても動作には影響しない）
+- 読み込みは `register()` 時の一度だけ。変更の反映には AviUtl2 の再起動が必要
 
 ---
 

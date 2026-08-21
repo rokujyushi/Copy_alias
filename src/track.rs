@@ -187,18 +187,6 @@ impl ValueAdjust {
         !matches!(self, ValueAdjust::Keep)
     }
 
-    /// ログ・UI表示用の説明文。
-    pub fn describe(&self) -> Option<String> {
-        match self {
-            ValueAdjust::Keep => None,
-            ValueAdjust::Truncated { from, to } => {
-                Some(format!("値の数を {from} → {to} に切り詰めました"))
-            }
-            ValueAdjust::Extended { from, to } => {
-                Some(format!("値の数を {from} → {to} に補完しました"))
-            }
-        }
-    }
 }
 
 /// 値の個数を対象オブジェクトに合わせて調整する。

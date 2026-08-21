@@ -1,6 +1,6 @@
 [package]
 name = "copy_alias"
-version = "2.1.0"
+version = "2.2.0"
 edition = "2024"
 license = "MIT"
 description = "AviUtl ExEdit2 用のエイリアス操作プラグイン"
