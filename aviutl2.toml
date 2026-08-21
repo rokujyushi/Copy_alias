@@ -3,7 +3,7 @@
 [project]
 id = "KuroNeko.CopyAlias"
 name = "CopyAlias"
-version = "2.1.0"
+version = "2.2.0"
 
 [development]
 aviutl2_version = "latest"
@@ -15,6 +15,10 @@ source = "https://raw.githubusercontent.com/aviutl2/aviutl2_community_translatio
 
 [artifacts.English-aul2.profiles.debug]
 enabled = true
+
+[artifacts.English-copyalias-aul2]
+destination = "Language/English.copyalias.aul2"
+source = "./i18n/English.copyalias.aul2"
 
 [artifacts.copyalias-aux2]
 destination = "Plugin/CopyAlias.aux2"

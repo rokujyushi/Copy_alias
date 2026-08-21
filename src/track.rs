@@ -187,18 +187,6 @@ impl ValueAdjust {
         !matches!(self, ValueAdjust::Keep)
     }
 
-    /// ログ・UI表示用の説明文。
-    pub fn describe(&self) -> Option<String> {
-        match self {
-            ValueAdjust::Keep => None,
-            ValueAdjust::Truncated { from, to } => {
-                Some(format!("値の数を {from} → {to} に切り詰めました"))
-            }
-            ValueAdjust::Extended { from, to } => {
-                Some(format!("値の数を {from} → {to} に補完しました"))
-            }
-        }
-    }
 }
 
 /// 値の個数を対象オブジェクトに合わせて調整する。
@@ -349,11 +337,9 @@ pub struct TrackClip {
 /// クリップボード用セクション名。
 pub const CLIP_SECTION: &str = "CopyAlias.TrackParam";
 
-/// クリップボードへ書き出すテキストを組み立てる。
-pub fn to_clipboard_text(clip: &TrackClip) -> String {
+fn write_clip_section(out: &mut String, section: &str, clip: &TrackClip) {
     let param = &clip.param;
-    let mut out = String::new();
-    out.push_str(&format!("[{CLIP_SECTION}]\r\n"));
+    out.push_str(&format!("[{section}]\r\n"));
     out.push_str("version=1\r\n");
     out.push_str(&format!("effect={}\r\n", clip.effect));
     out.push_str(&format!("effect_index={}\r\n", clip.effect_index));
@@ -365,11 +351,33 @@ pub fn to_clipboard_text(clip: &TrackClip) -> String {
         param.mode.as_deref().unwrap_or_default()
     ));
     out.push_str(&format!("flags={}\r\n", param.flags));
-    if let Some(param) = &param.param {
-        out.push_str(&format!("param={param}\r\n"));
+    if let Some(value) = &param.param {
+        out.push_str(&format!("param={value}\r\n"));
     }
     if let Some(timecontrol) = &param.timecontrol {
         out.push_str(&format!("timecontrol={timecontrol}\r\n"));
+    }
+}
+
+/// クリップボードへ書き出すテキストを組み立てる。
+pub fn to_clipboard_text(clip: &TrackClip) -> String {
+    let mut out = String::new();
+    write_clip_section(&mut out, CLIP_SECTION, clip);
+    out
+}
+
+/// 複数項目をクリップボードへ書き出すテキストを組み立てる。
+///
+/// 1件の場合は単一形式（`[CopyAlias.TrackParam]`）で書き出し、
+/// 複数の場合は連番セクション（`[CopyAlias.TrackParam.0]`…）にする。
+pub fn to_clipboard_text_multi(clips: &[TrackClip]) -> String {
+    if let [clip] = clips {
+        return to_clipboard_text(clip);
+    }
+
+    let mut out = String::new();
+    for (index, clip) in clips.iter().enumerate() {
+        write_clip_section(&mut out, &format!("{CLIP_SECTION}.{index}"), clip);
     }
     out
 }
@@ -382,15 +390,10 @@ pub fn looks_like_value(text: &str) -> bool {
 
 /// クリップボードのテキストが CopyAlias 形式かどうか。
 pub fn is_clipboard_text(text: &str) -> bool {
-    text.contains(&format!("[{CLIP_SECTION}]"))
+    text.contains(&format!("[{CLIP_SECTION}"))
 }
 
-/// CopyAlias 形式のクリップボードテキストを読み取る。
-pub fn from_clipboard_text(text: &str) -> Option<TrackClip> {
-    let text = text.strip_prefix('\u{feff}').unwrap_or(text);
-    let ini = ini::Ini::load_from_str_noescape(text).ok()?;
-    let section = ini.section(Some(CLIP_SECTION))?;
-
+fn read_clip_section(section: &ini::Properties) -> TrackClip {
     let values: Vec<String> = section
         .get("values")
         .map(|values| {
@@ -408,7 +411,7 @@ pub fn from_clipboard_text(text: &str) -> Option<TrackClip> {
         .filter(|mode| !mode.is_empty())
         .map(str::to_string);
 
-    Some(TrackClip {
+    TrackClip {
         effect: section.get("effect").unwrap_or_default().trim().to_string(),
         effect_index: section
             .get("effect_index")
@@ -425,7 +428,39 @@ pub fn from_clipboard_text(text: &str) -> Option<TrackClip> {
             param: section.get("param").map(str::to_string),
             timecontrol: section.get("timecontrol").map(str::to_string),
         },
-    })
+    }
+}
+
+/// CopyAlias 形式のクリップボードテキストを読み取る。
+pub fn from_clipboard_text(text: &str) -> Option<TrackClip> {
+    from_clipboard_text_multi(text).into_iter().next()
+}
+
+/// CopyAlias 形式のクリップボードテキストを全件読み取る。
+///
+/// 単一形式（`[CopyAlias.TrackParam]`）と連番形式（`[CopyAlias.TrackParam.N]`）の
+/// 両方を受け付ける。連番形式は番号順に並べ替えて返す。
+pub fn from_clipboard_text_multi(text: &str) -> Vec<TrackClip> {
+    let text = text.strip_prefix('\u{feff}').unwrap_or(text);
+    let Ok(ini) = ini::Ini::load_from_str_noescape(text) else {
+        return Vec::new();
+    };
+
+    if let Some(section) = ini.section(Some(CLIP_SECTION)) {
+        return vec![read_clip_section(section)];
+    }
+
+    let prefix = format!("{CLIP_SECTION}.");
+    let mut indexed: Vec<(usize, TrackClip)> = ini
+        .iter()
+        .filter_map(|(name, section)| {
+            let index = name?.trim().strip_prefix(&prefix)?.parse::<usize>().ok()?;
+            Some((index, read_clip_section(section)))
+        })
+        .collect();
+
+    indexed.sort_by_key(|(index, _)| *index);
+    indexed.into_iter().map(|(_, clip)| clip).collect()
 }
 
 #[cfg(test)]
@@ -630,6 +665,49 @@ mod tests {
 
         assert_eq!(merged.value, "50.00");
         assert_eq!(merged.adjust, ValueAdjust::Keep);
+    }
+
+    #[test]
+    fn clipboard_multi_roundtrip() {
+        let clips = vec![
+            TrackClip {
+                effect: "標準描画".to_string(),
+                effect_index: 0,
+                item: "X".to_string(),
+                param: parse("0.00,100.00,直線移動,3", Some(true)),
+            },
+            TrackClip {
+                effect: "標準描画".to_string(),
+                effect_index: 0,
+                item: "Y".to_string(),
+                param: parse("50.00", None),
+            },
+        ];
+
+        let text = to_clipboard_text_multi(&clips);
+        assert!(is_clipboard_text(&text));
+        assert!(text.contains("[CopyAlias.TrackParam.0]"));
+        assert!(text.contains("[CopyAlias.TrackParam.1]"));
+
+        assert_eq!(from_clipboard_text_multi(&text), clips);
+    }
+
+    #[test]
+    fn clipboard_multi_with_single_item_uses_legacy_format() {
+        let clips = vec![TrackClip {
+            effect: "標準描画".to_string(),
+            effect_index: 0,
+            item: "X".to_string(),
+            param: parse("0.00,100.00,直線移動,3", Some(true)),
+        }];
+
+        let text = to_clipboard_text_multi(&clips);
+        assert!(text.contains("[CopyAlias.TrackParam]"));
+        assert!(!text.contains("[CopyAlias.TrackParam.0]"));
+
+        // 単一形式でも複数形式でも読める。
+        assert_eq!(from_clipboard_text_multi(&text), clips);
+        assert_eq!(from_clipboard_text(&text).as_ref(), clips.first());
     }
 
     #[test]
